@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Search, Users, UserCheck, UserX, TrendingUp, Calendar, Mail, Phone, MapPin, Eye, Loader2, AlertCircle } from 'lucide-react'
+import { useTeacherClasses } from '@/hooks/useTeacherClasses'
 
 // Updated interfaces to match your backend schema
 interface Student {
@@ -80,16 +81,25 @@ export const Students: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Constants
-  const grades = Array.from({ length: 12 }, (_, i) => i + 1)
-  const sections = ['A', 'B', 'C', 'D']
+  // Use the teacher classes hook
+  const {
+    getAssignedGrades,
+    getSectionsForGrade,
+    loading: classesLoading
+  } = useTeacherClasses()
+
+  // Get dynamic grades and sections based on teacher's assignments
+  const grades = getAssignedGrades()
+  const sections = selectedGrade !== 'all'
+    ? getSectionsForGrade(parseInt(selectedGrade))
+    : []
 
   // API functions
   const fetchAllStudents = async () => {
     try {
       setLoading(true)
       setError(null)
-      
+
       // Fetch all students from the backend
       const token = localStorage.getItem('teacherToken')
       const response = await fetch('/api/teachers/students', {
@@ -119,7 +129,7 @@ export const Students: React.FC = () => {
               fetchStudentMarks(student.studentID),
               fetchStudentAttendance(student.studentID)
             ])
-            
+
             return {
               ...student,
               marks,
@@ -157,7 +167,7 @@ export const Students: React.FC = () => {
         return []
       }
       const data = await response.json()
-      
+
       // Flatten categorized marks
       const allMarks: Mark[] = []
       Object.values(data).forEach((categoryMarks: any) => {
@@ -165,7 +175,7 @@ export const Students: React.FC = () => {
           allMarks.push(...categoryMarks)
         }
       })
-      
+
       return allMarks
     } catch (err) {
       console.error(`Error fetching marks for student ${studentID}:`, err)
@@ -220,7 +230,7 @@ export const Students: React.FC = () => {
 
     // Get the latest record for cumulative data
     const latestRecord = records.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0]
-    
+
     return {
       totalDays: latestRecord.totalDays,
       presentDays: latestRecord.totalPresent,
@@ -282,6 +292,11 @@ export const Students: React.FC = () => {
     }
   }, [selectedGrade, selectedSection, students])
 
+  // Reset section when grade changes
+  useEffect(() => {
+    setSelectedSection('all')
+  }, [selectedGrade])
+
   // Get full name
   const getFullName = (student: Student) => {
     return `${student.firstName}${student.lastName ? ` ${student.lastName}` : ''}`
@@ -299,11 +314,11 @@ export const Students: React.FC = () => {
 
     const totalObtained = marks.reduce((sum, mark) => sum + mark.marksObtained, 0)
     const totalMarks = marks.reduce((sum, mark) => sum + mark.totalMarks, 0)
-    
+
     if (totalMarks === 0) return { grade: 'N/A', percentage: 0 }
 
     const percentage = (totalObtained / totalMarks) * 100
-    
+
     let grade = 'F'
     if (percentage >= 90) grade = 'A+'
     else if (percentage >= 80) grade = 'A'
@@ -343,7 +358,7 @@ export const Students: React.FC = () => {
   // Calculate student statistics
   const getStudentStats = (): StudentStats => {
     const gradeDistribution: { [key: string]: number } = {}
-    
+
     students.forEach(student => {
       const gradeKey = `Grade ${student.grade}`
       gradeDistribution[gradeKey] = (gradeDistribution[gradeKey] || 0) + 1
@@ -426,8 +441,8 @@ export const Students: React.FC = () => {
                 <div>
                   <p className="text-sm text-muted-foreground">Last Login</p>
                   <p className="font-medium">
-                    {student.lastLoginAt 
-                      ? new Date(student.lastLoginAt).toLocaleDateString() 
+                    {student.lastLoginAt
+                      ? new Date(student.lastLoginAt).toLocaleDateString()
                       : 'Never'
                     }
                   </p>
@@ -514,7 +529,7 @@ export const Students: React.FC = () => {
                     <p className="text-sm text-muted-foreground">Percentage</p>
                   </div>
                 </div>
-                
+
                 {student.recentAttendance && student.recentAttendance.length > 0 && (
                   <div>
                     <p className="font-medium mb-2">Recent Attendance</p>
@@ -522,12 +537,12 @@ export const Students: React.FC = () => {
                       {student.recentAttendance.map((record, index) => (
                         <div key={index} className="text-center p-2 border rounded">
                           <p className="text-xs text-muted-foreground">
-                            {new Date(record.date).toLocaleDateString('en-US', { 
-                              month: 'short', 
-                              day: 'numeric' 
+                            {new Date(record.date).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric'
                             })}
                           </p>
-                          <Badge 
+                          <Badge
                             variant={record.status === 'present' ? 'default' : 'destructive'}
                             className="mt-1"
                           >
@@ -683,7 +698,7 @@ export const Students: React.FC = () => {
                       <p className="text-sm text-muted-foreground">Grade {student.grade}-{student.section}</p>
                     </div>
                   </div>
-                  
+
                   <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
                     <div>
                       <p className="text-muted-foreground">Attendance</p>
@@ -698,13 +713,13 @@ export const Students: React.FC = () => {
                       </Badge>
                     </div>
                   </div>
-                  
+
                   <div className="mt-4 flex items-center justify-between">
                     <Badge variant="outline">
                       {getSessionStatus(student)}
                     </Badge>
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       size="sm"
                       onClick={() => openProfile(student)}
                     >
@@ -727,8 +742,8 @@ export const Students: React.FC = () => {
               <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
               <h3 className="text-lg font-medium text-foreground mb-2">No Students Found</h3>
               <p className="text-muted-foreground">
-                {searchTerm 
-                  ? `No students found matching "${searchTerm}"` 
+                {searchTerm
+                  ? `No students found matching "${searchTerm}"`
                   : 'Try adjusting your search criteria or filters'
                 }
               </p>

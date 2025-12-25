@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -9,24 +9,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Plus, Calendar as CalendarIcon, Users, Edit, Trash2, Eye, Save, X, Loader2, AlertCircle, Filter } from 'lucide-react'
+import { Plus, Calendar as CalendarIcon, Users, Edit, Trash2, Save, X, Loader2, AlertCircle, Filter } from 'lucide-react'
 import { format } from 'date-fns'
-import { cn } from '@/lib/utils'
+import { useTeacherClasses } from '@/hooks/useTeacherClasses'
+import { AssignmentForm } from '@/components/assignments/AssignmentForm'
 
-// Updated interfaces to match your backend schema
-interface Student {
-  _id: string
-  studentID: string
-  firstName: string
-  lastName?: string
-  grade: number
-  section?: string
-  email: string
-}
-
+// Updated interfaces to work with classes instead of individual students
 interface Homework {
   _id: string
-  studentID: string
+  grade: number
+  section: string
   title: string
   description: string
   assignDate: string
@@ -37,7 +29,8 @@ interface Homework {
 }
 
 interface NewHomework {
-  studentID: string
+  grade: number
+  section: string
   title: string
   description: string
   assignDate: string
@@ -54,7 +47,6 @@ interface AssignmentStats {
 
 export const Assignments: React.FC = () => {
   const [assignments, setAssignments] = useState<Homework[]>([])
-  const [students, setStudents] = useState<Student[]>([])
   const [filteredAssignments, setFilteredAssignments] = useState<Homework[]>([])
   const [showForm, setShowForm] = useState(false)
   const [editingAssignment, setEditingAssignment] = useState<Homework | null>(null)
@@ -62,16 +54,30 @@ export const Assignments: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  
+
   // Filter states
-  const [selectedStudent, setSelectedStudent] = useState<string>('')
+  const [selectedGrade, setSelectedGrade] = useState<string>('')
+  const [selectedSection, setSelectedSection] = useState<string>('')
   const [fromDate, setFromDate] = useState<Date | undefined>(undefined)
   const [toDate, setToDate] = useState<Date | undefined>(undefined)
   const [searchTerm, setSearchTerm] = useState('')
 
+  // Use the teacher classes hook
+  const {
+    getAssignedGrades,
+    getSectionsForGrade
+  } = useTeacherClasses()
+
+  // Get dynamic grades and sections based on teacher's assignments
+  const grades = getAssignedGrades()
+  const sections = selectedGrade
+    ? getSectionsForGrade(parseInt(selectedGrade))
+    : []
+
   // Form state
   const [newHomework, setNewHomework] = useState<NewHomework>({
-    studentID: '',
+    grade: 0,
+    section: '',
     title: '',
     description: '',
     assignDate: new Date().toISOString().split('T')[0],
@@ -79,7 +85,7 @@ export const Assignments: React.FC = () => {
     date: new Date().toISOString().split('T')[0]
   })
 
-  const [formErrors, setFormErrors] = useState<Partial<NewHomework>>({})
+  const [formErrors, setFormErrors] = useState<Partial<Record<keyof NewHomework, string>>>({})
 
   // API functions
   const fetchAllHomework = async () => {
@@ -131,23 +137,6 @@ export const Assignments: React.FC = () => {
       setError('Failed to load assignments for selected date range')
     } finally {
       setLoading(false)
-    }
-  }
-
-  const fetchStudents = async () => {
-    try {
-      const token = localStorage.getItem('teacherToken')
-      const response = await fetch('/api/teachers/students', {
-        headers: {
-          'Authorization': token ? `Bearer ${token}` : ''
-        }
-      })
-      if (!response.ok) throw new Error('Failed to fetch students')
-      const data = await response.json()
-      setStudents(data)
-    } catch (err) {
-      console.error('Error fetching students:', err)
-      setError('Failed to load students')
     }
   }
 
@@ -210,20 +199,31 @@ export const Assignments: React.FC = () => {
   const deleteHomework = async (homeworkID: string) => {
     try {
       setSaving(true)
+      console.log('Deleting homework with ID:', homeworkID)
+
       const token = localStorage.getItem('teacherToken')
+      const requestBody = { homeworkID }
+      console.log('Delete request body:', requestBody)
+
       const response = await fetch('/api/teachers/Homework', {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': token ? `Bearer ${token}` : ''
         },
-        body: JSON.stringify({ homeworkID })
+        body: JSON.stringify(requestBody)
       })
+
+      console.log('Delete response status:', response.status)
 
       if (!response.ok) {
         const errorData = await response.json()
+        console.error('Delete error response:', errorData)
         throw new Error(errorData.message || 'Failed to delete homework')
       }
+
+      const result = await response.json()
+      console.log('Delete successful:', result)
 
       await fetchAllHomework() // Refresh assignments
     } catch (err) {
@@ -237,8 +237,12 @@ export const Assignments: React.FC = () => {
   // Load data on component mount
   useEffect(() => {
     fetchAllHomework()
-    fetchStudents()
   }, [])
+
+  // Reset section when grade changes
+  useEffect(() => {
+    setSelectedSection('')
+  }, [selectedGrade])
 
   // Apply filters
   useEffect(() => {
@@ -249,32 +253,36 @@ export const Assignments: React.FC = () => {
 
       // Filter by search term
       if (searchTerm) {
-        filtered = filtered.filter(assignment => 
+        filtered = filtered.filter(assignment =>
           assignment.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
           assignment.description.toLowerCase().includes(searchTerm.toLowerCase())
         )
       }
 
-      // Filter by student
-      if (selectedStudent) {
-        filtered = filtered.filter(assignment => assignment.studentID === selectedStudent)
+      // Filter by grade
+      if (selectedGrade) {
+        filtered = filtered.filter(assignment => assignment.grade.toString() === selectedGrade)
+      }
+
+      // Filter by section
+      if (selectedSection) {
+        filtered = filtered.filter(assignment => assignment.section === selectedSection)
       }
 
       setFilteredAssignments(filtered)
     }
-  }, [searchTerm, selectedStudent, assignments, fromDate, toDate])
+  }, [searchTerm, selectedGrade, selectedSection, assignments, fromDate, toDate])
 
-  // Get student name by ID
-  const getStudentName = (studentID: string) => {
-    const student = students.find(s => s.studentID === studentID)
-    return student ? `${student.firstName}${student.lastName ? ` ${student.lastName}` : ''}` : 'Unknown Student'
+  // Get class name
+  const getClassName = (grade: number, section: string) => {
+    return `Grade ${grade} - Section ${section}`
   }
 
   // Get assignment status based on due date
   const getAssignmentStatus = (dueDate: string) => {
     const today = new Date()
     const due = new Date(dueDate)
-    
+
     if (due < today) return 'overdue'
     if (due.toDateString() === today.toDateString()) return 'due-today'
     return 'active'
@@ -296,7 +304,7 @@ export const Assignments: React.FC = () => {
   // Calculate statistics
   const getAssignmentStats = (): AssignmentStats => {
     const today = new Date().toISOString().split('T')[0]
-    
+
     return {
       totalAssignments: assignments.length,
       todayAssignments: assignments.filter(a => a.date === today).length,
@@ -307,14 +315,15 @@ export const Assignments: React.FC = () => {
 
   // Form validation
   const validateForm = (): boolean => {
-    const errors: Partial<NewHomework> = {}
-    
-    if (!newHomework.studentID) errors.studentID = 'Student is required'
+    const errors: Partial<Record<keyof NewHomework, string>> = {}
+
+    if (!newHomework.grade || newHomework.grade === 0) errors.grade = 'Grade is required'
+    if (!newHomework.section) errors.section = 'Section is required'
     if (!newHomework.title.trim()) errors.title = 'Title is required'
     if (!newHomework.description.trim()) errors.description = 'Description is required'
     if (!newHomework.assignDate) errors.assignDate = 'Assign date is required'
     if (!newHomework.dueDate) errors.dueDate = 'Due date is required'
-    
+
     // Validate that due date is after assign date
     if (newHomework.assignDate && newHomework.dueDate) {
       if (new Date(newHomework.dueDate) <= new Date(newHomework.assignDate)) {
@@ -329,7 +338,7 @@ export const Assignments: React.FC = () => {
   // Handle form submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     if (!validateForm()) return
 
     try {
@@ -339,10 +348,11 @@ export const Assignments: React.FC = () => {
       } else {
         await createHomework(newHomework)
       }
-      
+
       setShowForm(false)
       setNewHomework({
-        studentID: '',
+        grade: 0,
+        section: '',
         title: '',
         description: '',
         assignDate: new Date().toISOString().split('T')[0],
@@ -356,26 +366,30 @@ export const Assignments: React.FC = () => {
   }
 
   // Handle input changes
-  const handleInputChange = (field: keyof NewHomework, value: string) => {
+  const handleInputChange = useCallback((field: keyof NewHomework, value: string | number) => {
     setNewHomework(prev => ({
       ...prev,
       [field]: value
     }))
-    
+
     // Clear error for this field
-    if (formErrors[field]) {
-      setFormErrors(prev => ({
-        ...prev,
-        [field]: undefined
-      }))
-    }
-  }
+    setFormErrors(prev => {
+      if (prev[field]) {
+        return {
+          ...prev,
+          [field]: undefined
+        }
+      }
+      return prev
+    })
+  }, [])
 
   // Handle edit
   const handleEdit = (assignment: Homework) => {
     setEditingAssignment(assignment)
     setNewHomework({
-      studentID: assignment.studentID,
+      grade: assignment.grade,
+      section: assignment.section,
       title: assignment.title,
       description: assignment.description,
       assignDate: assignment.assignDate.split('T')[0],
@@ -387,12 +401,17 @@ export const Assignments: React.FC = () => {
 
   // Handle delete
   const handleDelete = async (homeworkID: string) => {
+    console.log('Attempting to delete assignment with ID:', homeworkID)
+
     if (confirm('Are you sure you want to delete this assignment?')) {
       try {
         await deleteHomework(homeworkID)
         alert('Assignment deleted successfully!')
       } catch (err: any) {
-        setError(err.message || 'Failed to delete assignment')
+        console.error('Delete error:', err)
+        const errorMessage = err.message || 'Failed to delete assignment'
+        setError(errorMessage)
+        alert(`Error: ${errorMessage}`)
       }
     }
   }
@@ -406,115 +425,6 @@ export const Assignments: React.FC = () => {
 
   const stats = getAssignmentStats()
 
-  // Assignment Form Component
-  const AssignmentForm = () => (
-    <DialogContent className="max-w-2xl">
-      <DialogHeader>
-        <DialogTitle>{editingAssignment ? 'Edit Assignment' : 'Create New Assignment'}</DialogTitle>
-      </DialogHeader>
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
-          <AlertCircle className="h-4 w-4 mr-2 inline" />
-          {error}
-        </div>
-      )}
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <Label htmlFor="studentID">Student *</Label>
-          <Select 
-            value={newHomework.studentID} 
-            onValueChange={(value) => handleInputChange('studentID', value)}
-          >
-            <SelectTrigger className={formErrors.studentID ? 'border-red-500' : ''}>
-              <SelectValue placeholder="Select student" />
-            </SelectTrigger>
-            <SelectContent>
-              {students.map((student) => (
-                <SelectItem key={student._id} value={student.studentID}>
-                  {`${student.firstName}${student.lastName ? ` ${student.lastName}` : ''} (${student.studentID})`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {formErrors.studentID && <p className="text-sm text-red-500 mt-1">{formErrors.studentID}</p>}
-        </div>
-
-        <div>
-          <Label htmlFor="title">Title *</Label>
-          <Input
-            id="title"
-            value={newHomework.title}
-            onChange={(e) => handleInputChange('title', e.target.value)}
-            placeholder="Enter assignment title"
-            className={formErrors.title ? 'border-red-500' : ''}
-          />
-          {formErrors.title && <p className="text-sm text-red-500 mt-1">{formErrors.title}</p>}
-        </div>
-
-        <div>
-          <Label htmlFor="description">Description *</Label>
-          <Textarea
-            id="description"
-            value={newHomework.description}
-            onChange={(e) => handleInputChange('description', e.target.value)}
-            placeholder="Enter assignment description"
-            className={formErrors.description ? 'border-red-500' : ''}
-            rows={3}
-          />
-          {formErrors.description && <p className="text-sm text-red-500 mt-1">{formErrors.description}</p>}
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <Label htmlFor="assignDate">Assign Date *</Label>
-            <Input
-              id="assignDate"
-              type="date"
-              value={newHomework.assignDate}
-              onChange={(e) => handleInputChange('assignDate', e.target.value)}
-              className={formErrors.assignDate ? 'border-red-500' : ''}
-            />
-            {formErrors.assignDate && <p className="text-sm text-red-500 mt-1">{formErrors.assignDate}</p>}
-          </div>
-          <div>
-            <Label htmlFor="dueDate">Due Date *</Label>
-            <Input
-              id="dueDate"
-              type="date"
-              value={newHomework.dueDate}
-              onChange={(e) => handleInputChange('dueDate', e.target.value)}
-              className={formErrors.dueDate ? 'border-red-500' : ''}
-            />
-            {formErrors.dueDate && <p className="text-sm text-red-500 mt-1">{formErrors.dueDate}</p>}
-          </div>
-        </div>
-
-        <div className="flex justify-end space-x-2 pt-4">
-          <Button 
-            type="button" 
-            variant="outline" 
-            onClick={() => {
-              setShowForm(false)
-              setEditingAssignment(null)
-              setError(null)
-            }}
-            disabled={saving}
-          >
-            <X className="mr-2 h-4 w-4" />
-            Cancel
-          </Button>
-          <Button type="submit" disabled={saving}>
-            {saving ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Save className="mr-2 h-4 w-4" />
-            )}
-            {saving ? 'Saving...' : (editingAssignment ? 'Update Assignment' : 'Create Assignment')}
-          </Button>
-        </div>
-      </form>
-    </DialogContent>
-  )
 
   return (
     <div className="w-full max-w-none space-y-6">
@@ -522,7 +432,7 @@ export const Assignments: React.FC = () => {
         <div>
           <h2 className="text-3xl font-bold tracking-tight text-foreground">Assignments</h2>
           <p className="text-muted-foreground">
-            Manage and track homework assignments for students
+            Manage and track homework assignments for your classes
           </p>
         </div>
         <div className="flex space-x-2">
@@ -578,7 +488,8 @@ export const Assignments: React.FC = () => {
               <Button onClick={() => {
                 setEditingAssignment(null)
                 setNewHomework({
-                  studentID: '',
+                  grade: 0,
+                  section: '',
                   title: '',
                   description: '',
                   assignDate: new Date().toISOString().split('T')[0],
@@ -590,7 +501,22 @@ export const Assignments: React.FC = () => {
                 Create Assignment
               </Button>
             </DialogTrigger>
-            <AssignmentForm />
+            <AssignmentForm
+              newHomework={newHomework}
+              formErrors={formErrors}
+              error={error}
+              saving={saving}
+              editingAssignment={editingAssignment}
+              grades={grades}
+              getSectionsForGrade={getSectionsForGrade}
+              handleInputChange={handleInputChange}
+              handleSubmit={handleSubmit}
+              onCancel={() => {
+                setShowForm(false)
+                setEditingAssignment(null)
+                setError(null)
+              }}
+            />
           </Dialog>
         </div>
       </div>
@@ -649,7 +575,7 @@ export const Assignments: React.FC = () => {
           <CardTitle>Filters</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <Label htmlFor="search">Search Assignments</Label>
               <Input
@@ -660,16 +586,32 @@ export const Assignments: React.FC = () => {
               />
             </div>
             <div>
-              <Label htmlFor="student">Filter by Student</Label>
-              <Select value={selectedStudent} onValueChange={setSelectedStudent}>
+              <Label htmlFor="grade">Filter by Grade</Label>
+              <Select value={selectedGrade} onValueChange={setSelectedGrade}>
                 <SelectTrigger>
-                  <SelectValue placeholder="All students" />
+                  <SelectValue placeholder="All grades" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Students</SelectItem>
-                  {students.map((student) => (
-                    <SelectItem key={student._id} value={student.studentID}>
-                      {`${student.firstName}${student.lastName ? ` ${student.lastName}` : ''}`}
+                  <SelectItem value="">All Grades</SelectItem>
+                  {grades.map((grade) => (
+                    <SelectItem key={grade} value={grade.toString()}>
+                      Grade {grade}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label htmlFor="section">Filter by Section</Label>
+              <Select value={selectedSection} onValueChange={setSelectedSection} disabled={!selectedGrade}>
+                <SelectTrigger>
+                  <SelectValue placeholder="All sections" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">All Sections</SelectItem>
+                  {sections.map((section) => (
+                    <SelectItem key={section} value={section}>
+                      Section {section}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -714,7 +656,7 @@ export const Assignments: React.FC = () => {
                 <CardContent>
                   <div className="space-y-3">
                     <div className="text-sm">
-                      <span className="font-medium">Student:</span> {getStudentName(assignment.studentID)}
+                      <span className="font-medium">Class:</span> {getClassName(assignment.grade, assignment.section)}
                     </div>
                     <div className="flex items-center justify-between text-sm text-muted-foreground">
                       <div className="flex items-center">
@@ -729,18 +671,18 @@ export const Assignments: React.FC = () => {
                       </div>
                     </div>
                     <div className="flex space-x-2">
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
+                      <Button
+                        variant="outline"
+                        size="sm"
                         className="flex-1"
                         onClick={() => handleEdit(assignment)}
                       >
                         <Edit className="mr-1 h-3 w-3" />
                         Edit
                       </Button>
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
+                      <Button
+                        variant="outline"
+                        size="sm"
                         className="flex-1"
                         onClick={() => handleDelete(assignment._id)}
                         disabled={saving}
@@ -765,8 +707,8 @@ export const Assignments: React.FC = () => {
               <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
               <h3 className="text-lg font-medium text-foreground mb-2">No Assignments Found</h3>
               <p className="text-muted-foreground mb-4">
-                {searchTerm || selectedStudent || (fromDate && toDate) 
-                  ? 'Try adjusting your filters' 
+                {searchTerm || selectedGrade || selectedSection || (fromDate && toDate)
+                  ? 'Try adjusting your filters'
                   : 'Create your first assignment to get started'
                 }
               </p>

@@ -12,6 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Search, Save, Download, Calendar as CalendarIcon, Check, X, Users, UserCheck, UserX, Clock, Eye, Loader2, AlertCircle } from 'lucide-react'
 import { format } from 'date-fns'
 import { cn } from '@/lib/utils'
+import { useTeacherClasses } from '@/hooks/useTeacherClasses'
 
 // Updated interfaces to match your backend schema
 interface Student {
@@ -66,9 +67,17 @@ export const Attendance: React.FC = () => {
   const [hasChanges, setHasChanges] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Constants
-  const grades = Array.from({ length: 12 }, (_, i) => i + 1)
-  const sections = ['A', 'B', 'C', 'D']
+  // Use the teacher classes hook
+  const {
+    getAssignedGrades,
+    getSectionsForGrade
+  } = useTeacherClasses()
+
+  // Get dynamic grades and sections based on teacher's assignments
+  const grades = getAssignedGrades()
+  const sections = selectedGrade
+    ? getSectionsForGrade(parseInt(selectedGrade))
+    : []
 
   // API functions
   const fetchStudents = async () => {
@@ -82,7 +91,7 @@ export const Attendance: React.FC = () => {
       })
       if (!response.ok) throw new Error('Failed to fetch students')
       const data = await response.json()
-      
+
       // Filter students by selected grade and section
       let filteredStudents = data
       if (selectedGrade) {
@@ -91,13 +100,13 @@ export const Attendance: React.FC = () => {
       if (selectedSection) {
         filteredStudents = filteredStudents.filter((s: Student) => s.section === selectedSection)
       }
-      
+
       // Initialize attendance state
       const studentsWithAttendance = filteredStudents.map((student: Student) => ({
         ...student,
         isPresent: null
       }))
-      
+
       setStudents(studentsWithAttendance)
       setError(null)
     } catch (err) {
@@ -109,50 +118,58 @@ export const Attendance: React.FC = () => {
   }
 
   const fetchAttendanceForDate = async () => {
-    if (students.length === 0) return
-
     try {
       setLoading(true)
       const dateStr = format(selectedDate, 'yyyy-MM-dd')
-      
-      // Fetch attendance records for all students for the selected date
-      const promises = students.map(async (student) => {
-        try {
-          const token = localStorage.getItem('teacherToken')
-          const response = await fetch(`/api/teachers/Attendance/${student.studentID}`, {
-            headers: {
-              'Authorization': token ? `Bearer ${token}` : ''
+
+      // Get current students from state
+      setStudents(currentStudents => {
+        if (currentStudents.length === 0) return currentStudents
+
+        // Fetch attendance records for all students for the selected date
+        const promises = currentStudents.map(async (student) => {
+          try {
+            const token = localStorage.getItem('teacherToken')
+            const response = await fetch(`/api/teachers/Attendance/${student.studentID}`, {
+              headers: {
+                'Authorization': token ? `Bearer ${token}` : ''
+              }
+            })
+            if (response.ok) {
+              const records = await response.json()
+              // Find record for selected date
+              return records.find((record: AttendanceRecord) => record.date === dateStr)
             }
-          })
-          if (response.ok) {
-            const records = await response.json()
-            // Find record for selected date
-            return records.find((record: AttendanceRecord) => record.date === dateStr)
+            return null
+          } catch (err) {
+            console.error(`Error fetching attendance for student ${student.studentID}:`, err)
+            return null
           }
-          return null
-        } catch (err) {
-          console.error(`Error fetching attendance for student ${student.studentID}:`, err)
-          return null
-        }
-      })
+        })
 
-      const attendanceData = await Promise.all(promises)
-      setAttendanceRecords(attendanceData.filter(Boolean))
+        Promise.all(promises).then(attendanceData => {
+          setAttendanceRecords(attendanceData.filter(Boolean))
 
-      // Update students with their attendance status
-      const updatedStudents = students.map((student, index) => {
-        const record = attendanceData[index]
-        return {
-          ...student,
-          isPresent: record ? (record.status === 'Present' ? true : false) : null
-        }
+          // Update students with their attendance status
+          setStudents(prevStudents => prevStudents.map((student, index) => {
+            const record = attendanceData[index]
+            return {
+              ...student,
+              isPresent: record ? (record.status === 'Present' ? true : false) : null
+            }
+          }))
+        }).catch(err => {
+          console.error('Error fetching attendance:', err)
+          setError('Failed to load attendance data')
+        }).finally(() => {
+          setLoading(false)
+        })
+
+        return currentStudents
       })
-      
-      setStudents(updatedStudents)
     } catch (err) {
       console.error('Error fetching attendance:', err)
       setError('Failed to load attendance data')
-    } finally {
       setLoading(false)
     }
   }
@@ -167,10 +184,10 @@ export const Attendance: React.FC = () => {
       })
       if (!response.ok) throw new Error('Failed to fetch attendance history')
       const data = await response.json()
-      
+
       // Process data to create history summary
       const historyMap = new Map<string, any>()
-      
+
       data.forEach((record: AttendanceRecord) => {
         const key = `${record.date}`
         if (!historyMap.has(key)) {
@@ -181,7 +198,7 @@ export const Attendance: React.FC = () => {
             absentStudents: 0
           })
         }
-        
+
         const entry = historyMap.get(key)
         entry.totalStudents += 1
         if (record.status === 'Present') {
@@ -190,12 +207,12 @@ export const Attendance: React.FC = () => {
           entry.absentStudents += 1
         }
       })
-      
+
       const historyArray = Array.from(historyMap.values()).map(entry => ({
         ...entry,
         percentage: entry.totalStudents > 0 ? (entry.presentStudents / entry.totalStudents) * 100 : 0
       }))
-      
+
       setAttendanceHistory(historyArray.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()))
     } catch (err) {
       console.error('Error fetching attendance history:', err)
@@ -275,10 +292,15 @@ export const Attendance: React.FC = () => {
     fetchAttendanceHistory()
   }, [])
 
+  // Reset section when grade changes
+  useEffect(() => {
+    setSelectedSection('')
+  }, [selectedGrade])
+
   const handleAttendanceChange = (studentId: string, status: boolean) => {
-    setStudents(prev => 
-      prev.map(student => 
-        student.studentID === studentId 
+    setStudents(prev =>
+      prev.map(student =>
+        student.studentID === studentId
           ? { ...student, isPresent: status }
           : student
       )
@@ -305,11 +327,11 @@ export const Attendance: React.FC = () => {
     if (!selectedGrade || students.length === 0) return
 
     setSaving(true)
-    
+
     try {
       const dateStr = format(selectedDate, 'yyyy-MM-dd')
       const today = format(new Date(), 'yyyy-MM-dd')
-      
+
       // Only allow marking attendance for today
       if (dateStr !== today) {
         throw new Error('Attendance can only be marked for today')
@@ -320,7 +342,7 @@ export const Attendance: React.FC = () => {
         .map(async (student) => {
           const status = student.isPresent ? 'Present' : 'Absent'
           const existingRecord = attendanceRecords.find(r => r.studentID === student.studentID)
-          
+
           if (existingRecord) {
             // Update existing record
             return await updateAttendance(student.studentID, status)
@@ -331,14 +353,14 @@ export const Attendance: React.FC = () => {
         })
 
       await Promise.all(promises)
-      
+
       setHasChanges(false)
       setError(null)
-      
+
       // Refresh attendance data
       await fetchAttendanceForDate()
       await fetchAttendanceHistory()
-      
+
       alert('Attendance saved successfully!')
     } catch (err: any) {
       console.error('Error saving attendance:', err)
@@ -348,7 +370,7 @@ export const Attendance: React.FC = () => {
     }
   }
 
-  const filteredStudents = students.filter(student => 
+  const filteredStudents = students.filter(student =>
     `${student.firstName} ${student.lastName || ''}`.toLowerCase().includes(searchTerm.toLowerCase()) ||
     student.studentID.includes(searchTerm)
   )
@@ -359,7 +381,7 @@ export const Attendance: React.FC = () => {
     const absent = students.filter(s => s.isPresent === false).length
     const notMarked = students.filter(s => s.isPresent === null).length
     const percentage = total > 0 ? (present / total) * 100 : 0
-    
+
     return { total, present, absent, notMarked, percentage }
   }
 
@@ -402,10 +424,10 @@ export const Attendance: React.FC = () => {
                       {record.absentStudents}
                     </TableCell>
                     <TableCell>
-                      <Badge 
+                      <Badge
                         variant={
-                          record.percentage >= 90 ? 'default' : 
-                          record.percentage >= 80 ? 'secondary' : 'destructive'
+                          record.percentage >= 90 ? 'default' :
+                            record.percentage >= 80 ? 'secondary' : 'destructive'
                         }
                       >
                         {record.percentage.toFixed(1)}%

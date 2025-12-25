@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Save, Users, BookOpen, TrendingUp, Award, Plus, Edit, Trash2, Loader2 } from 'lucide-react'
+import { useTeacherClasses } from '@/hooks/useTeacherClasses'
 
 // Updated interfaces to match your backend schema
 interface Student {
@@ -24,7 +25,7 @@ interface Mark {
   _id: string
   studentID: string
   subject: string
-  marksObtained: number 
+  marksObtained: number
   totalMarks: number
   examType: 'Midterm' | 'Final' | 'Class Test'
   semester: string
@@ -83,11 +84,19 @@ export const Marks: React.FC = () => {
 
   const [formErrors, setFormErrors] = useState<MarkValidationErrors>({})
 
-  // Constants
-  const grades = Array.from({ length: 12 }, (_, i) => i + 1)
-  const sections = ['A', 'B', 'C', 'D']
+  // Use the teacher classes hook
+  const {
+    getAssignedGrades,
+    getSectionsForGrade
+  } = useTeacherClasses()
+
+  // Get dynamic grades and sections based on teacher's assignments
+  const grades = getAssignedGrades()
+  const sections = selectedGrade
+    ? getSectionsForGrade(parseInt(selectedGrade))
+    : []
   const subjects = ['Mathematics', 'Physics', 'Chemistry', 'Biology', 'English', 'Hindi', 'History', 'Geography', 'Computer Science']
-  const examTypes: ('Midterm' | 'Final' | 'Class Test'|'Exam type is required')[] = ['Midterm', 'Final', 'Class Test']
+  const examTypes: ('Midterm' | 'Final' | 'Class Test' | 'Exam type is required')[] = ['Midterm', 'Final', 'Class Test']
   const semesters = ['Spring 2024', 'Fall 2024', 'Spring 2025', 'Fall 2025']
 
   // API functions
@@ -102,7 +111,7 @@ export const Marks: React.FC = () => {
       })
       if (!response.ok) throw new Error('Failed to fetch students')
       const data = await response.json()
-      
+
       // Filter students by selected grade and section
       let filteredStudents = data
       if (selectedGrade) {
@@ -111,7 +120,7 @@ export const Marks: React.FC = () => {
       if (selectedSection) {
         filteredStudents = filteredStudents.filter((s: Student) => s.section === selectedSection)
       }
-      
+
       setStudents(filteredStudents)
       setError(null)
     } catch (err) {
@@ -139,11 +148,11 @@ export const Marks: React.FC = () => {
           if (response.ok) {
             const data = await response.json()
             // Filter marks by subject, examType, and semester
-            const relevantMarks:Mark[] = []
+            const relevantMarks: Mark[] = []
             Object.values(data).flat().forEach((mark: any) => {
-              if (mark.subject === selectedSubject && 
-                  mark.examType === selectedExamType && 
-                  mark.semester === selectedSemester) {
+              if (mark.subject === selectedSubject &&
+                mark.examType === selectedExamType &&
+                mark.semester === selectedSemester) {
                 relevantMarks.push(mark)
               }
             })
@@ -268,6 +277,11 @@ export const Marks: React.FC = () => {
     }
   }, [selectedSubject, selectedExamType, selectedSemester, students.length])
 
+  // Reset section when grade changes
+  useEffect(() => {
+    setSelectedSection('')
+  }, [selectedGrade])
+
   // Quick update marks function (for inline editing)
   const quickUpdateMark = async (studentID: string, marksObtained: number) => {
     const student = students.find(s => s.studentID === studentID)
@@ -299,28 +313,28 @@ export const Marks: React.FC = () => {
   // Handle inline marks change
   const handleMarksChange = (studentID: string, value: string) => {
     const marksObtained = value === '' ? 0 : parseInt(value)
-    
+
     // Update local state immediately for better UX
     const updatedStudents = students.map(student => {
       if (student.studentID === studentID) {
-        const updatedMark = student.currentMark 
+        const updatedMark = student.currentMark
           ? { ...student.currentMark, marksObtained }
           : {
-              _id: 'temp',
-              studentID,
-              subject: selectedSubject,
-              marksObtained,
-              totalMarks: 100,
-              examType: selectedExamType,
-              semester: selectedSemester,
-              date: new Date().toISOString()
-            } as Mark
-        
+            _id: 'temp',
+            studentID,
+            subject: selectedSubject,
+            marksObtained,
+            totalMarks: 100,
+            examType: selectedExamType,
+            semester: selectedSemester,
+            date: new Date().toISOString()
+          } as Mark
+
         return { ...student, currentMark: updatedMark }
       }
       return student
     })
-    
+
     setStudents(updatedStudents)
     setHasChanges(true)
   }
@@ -332,7 +346,7 @@ export const Marks: React.FC = () => {
       const promises = students
         .filter(student => student.currentMark && student.currentMark._id !== 'temp')
         .map(student => quickUpdateMark(student.studentID, student.currentMark!.marksObtained))
-      
+
       await Promise.all(promises)
       setHasChanges(false)
       alert('All marks saved successfully!')
@@ -364,8 +378,8 @@ export const Marks: React.FC = () => {
 
   // Form validation
   const validateForm = (): boolean => {
-    const errors: MarkValidationErrors  = {}
-    
+    const errors: MarkValidationErrors = {}
+
     if (!newMark.studentID) errors.studentID = 'Student is required'
     if (!newMark.subject) errors.subject = 'Subject is required'
     if (!newMark.examType) errors.examType = 'Exam type is required'
@@ -381,7 +395,7 @@ export const Marks: React.FC = () => {
   // Handle form submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     if (!validateForm()) return
 
     try {
@@ -391,7 +405,7 @@ export const Marks: React.FC = () => {
       } else {
         await createMark(newMark)
       }
-      
+
       setShowAddMark(false)
       setNewMark({
         studentID: '',
@@ -439,8 +453,8 @@ export const Marks: React.FC = () => {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <Label htmlFor="studentID">Student *</Label>
-            <Select 
-              value={newMark.studentID} 
+            <Select
+              value={newMark.studentID}
               onValueChange={(value) => setNewMark(prev => ({ ...prev, studentID: value }))}
             >
               <SelectTrigger className={formErrors.studentID ? 'border-red-500' : ''}>
@@ -458,8 +472,8 @@ export const Marks: React.FC = () => {
           </div>
           <div>
             <Label htmlFor="subject">Subject *</Label>
-            <Select 
-              value={newMark.subject} 
+            <Select
+              value={newMark.subject}
               onValueChange={(value) => setNewMark(prev => ({ ...prev, subject: value }))}
             >
               <SelectTrigger className={formErrors.subject ? 'border-red-500' : ''}>
@@ -474,7 +488,7 @@ export const Marks: React.FC = () => {
             {formErrors.subject && <p className="text-sm text-red-500 mt-1">{formErrors.subject}</p>}
           </div>
         </div>
-        
+
         <div className="grid grid-cols-2 gap-4">
           <div>
             <Label htmlFor="marksObtained">Marks Obtained *</Label>
@@ -504,8 +518,8 @@ export const Marks: React.FC = () => {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <Label htmlFor="examType">Exam Type *</Label>
-            <Select 
-              value={newMark.examType} 
+            <Select
+              value={newMark.examType}
               onValueChange={(value: any) => setNewMark(prev => ({ ...prev, examType: value }))}
             >
               <SelectTrigger className={formErrors.examType ? 'border-red-500' : ''}>
@@ -521,8 +535,8 @@ export const Marks: React.FC = () => {
           </div>
           <div>
             <Label htmlFor="semester">Semester *</Label>
-            <Select 
-              value={newMark.semester} 
+            <Select
+              value={newMark.semester}
               onValueChange={(value) => setNewMark(prev => ({ ...prev, semester: value }))}
             >
               <SelectTrigger className={formErrors.semester ? 'border-red-500' : ''}>
@@ -549,9 +563,9 @@ export const Marks: React.FC = () => {
         </div>
 
         <div className="flex justify-end space-x-2 pt-4">
-          <Button 
-            type="button" 
-            variant="outline" 
+          <Button
+            type="button"
+            variant="outline"
             onClick={() => {
               setShowAddMark(false)
               setEditingMark(null)
@@ -830,8 +844,8 @@ export const Marks: React.FC = () => {
                       <TableCell>
                         <Badge variant={
                           grade === 'A+' || grade === 'A' ? 'default' :
-                          grade === 'B' || grade === 'C' ? 'secondary' :
-                          grade === 'D' ? 'outline' : 'destructive'
+                            grade === 'B' || grade === 'C' ? 'secondary' :
+                              grade === 'D' ? 'outline' : 'destructive'
                         }>
                           {grade}
                         </Badge>
